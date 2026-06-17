@@ -71,7 +71,7 @@ OUTPUT_COLUMNS = [
     "url",
 ]
 
-MAX_RESULTS = 100
+MAX_RESULTS = 10
 
 
 def adf_to_text(node: Any) -> str:
