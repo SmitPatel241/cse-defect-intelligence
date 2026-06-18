@@ -24,7 +24,7 @@ from utils import (
 
 CACHE_FILE = Path(__file__).parent / ".embedding_cache.json"
 
-DEFAULT_CSV = Path(__file__).parent / "defects.csv"
+DEFAULT_CSV = Path(__file__).parent / "CSE Tickets.csv"
 
 
 def _content_hash(combined_text: str) -> str:
@@ -58,12 +58,13 @@ def load_csv(csv_path: str | Path) -> pd.DataFrame:
         engine="python",
     )
 
-    required = {"Key", "Summary", "Description", "Comments"}
+    required = {"Issue key", "Summary", "Reporter", "Description", "comments"}
     missing = required - set(df.columns)
     if missing:
         raise ValueError(f"CSV is missing required columns: {missing}")
 
-    df = df[["Key", "Summary", "Description", "Comments"]].copy()
+    df = df[["Issue key", "Summary", "Reporter", "Description", "comments"]].copy()
+    df = df.rename(columns={"Issue key": "Key", "comments": "Comments"})
 
     for col in df.columns:
         df[col] = df[col].fillna("").astype(str).str.strip()
@@ -156,6 +157,9 @@ def generate_embeddings(texts: List[str]) -> List[List[float]]:
 
 
 PINECONE_UPSERT_BATCH = 100
+# Pinecone hard limit is 40,960 bytes of metadata per vector.
+# Truncate long free-text fields so we stay safely under that ceiling.
+_META_TEXT_LIMIT = 15_000  # chars; ~15 KB worst-case UTF-8 per field
 
 
 @retry(max_attempts=4, initial_delay=2.0, backoff=2.0)
@@ -175,11 +179,12 @@ def upsert_to_pinecone(
                 "id": record["key"],
                 "values": embedding,
                 "metadata": {
-                    "src": record["key"],
+                    "src": f"{record['key']} | {record['reporter']}",
                     "key": record["key"],
-                    "summary": record["summary"],
-                    "description": record["description"],
-                    "comments": record["comments"],
+                    "reporter": record["reporter"],
+                    "summary": record["summary"][:_META_TEXT_LIMIT],
+                    "description": record["description"][:_META_TEXT_LIMIT],
+                    "comments": record["comments"][:_META_TEXT_LIMIT],
                 },
             }
         )
@@ -218,16 +223,17 @@ def run_ingestion(csv_path: str | Path, reindex: bool = False) -> None:
         for k in stale:
             cache.pop(k, None)
 
-    to_process: List[Tuple[str, str, str, str, str]] = []
+    to_process: List[Tuple[str, str, str, str, str, str]] = []
     for _, row in df.iterrows():
         key = safe_str(row["Key"])
         summary = safe_str(row["Summary"])
+        reporter = safe_str(row["Reporter"])
         description = safe_str(row["Description"])
         comments = safe_str(row["Comments"])
         combined = build_combined_text(summary, description, comments)
         h = _content_hash(combined)
         if reindex or cache.get(key) != h:
-            to_process.append((key, summary, description, comments, combined))
+            to_process.append((key, summary, reporter, description, comments, combined))
 
     if not to_process:
         save_cache(cache)
@@ -240,22 +246,36 @@ def run_ingestion(csv_path: str | Path, reindex: bool = False) -> None:
         len(df) - len(to_process),
     )
 
-    records = [
-        {"key": k, "summary": s, "description": d, "comments": c}
-        for k, s, d, c, _ in to_process
-    ]
-    combined_texts = [t for _, _, _, _, t in to_process]
-
-    embeddings = generate_embeddings(combined_texts)
-
     index = get_pinecone_index()
-    upsert_to_pinecone(index, records, embeddings)
+    total_upserted = 0
 
-    for (key, _, _, _, combined), _ in zip(to_process, embeddings, strict=True):
-        cache[key] = _content_hash(combined)
+    for batch_start in range(0, len(to_process), BATCH_SIZE):
+        batch = to_process[batch_start : batch_start + BATCH_SIZE]
+        combined_texts = [t for _, _, _, _, _, t in batch]
 
-    save_cache(cache)
-    logger.info("Ingestion complete. %d records upserted.", len(records))
+        logger.info(
+            "Embedding batch %d–%d of %d…",
+            batch_start + 1,
+            min(batch_start + BATCH_SIZE, len(to_process)),
+            len(to_process),
+        )
+        embeddings = _embed_batch(get_gemini_client(), combined_texts)
+
+        records = [
+            {"key": k, "summary": s, "reporter": r, "description": d, "comments": c}
+            for k, s, r, d, c, _ in batch
+        ]
+        upsert_to_pinecone(index, records, embeddings)
+        total_upserted += len(records)
+
+        for (key, _, _, _, _, combined), _ in zip(batch, embeddings):
+            cache[key] = _content_hash(combined)
+        save_cache(cache)
+
+        if batch_start + BATCH_SIZE < len(to_process) and EMBED_BATCH_PAUSE_SEC > 0:
+            time.sleep(EMBED_BATCH_PAUSE_SEC)
+
+    logger.info("Ingestion complete. %d records upserted.", total_upserted)
 
 
 if __name__ == "__main__":
