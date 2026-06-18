@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 load_dotenv()
 sys.path.insert(0, str(Path(__file__).parent))
 
-from query import find_duplicates
+from query import find_duplicates, find_query_answer
 import jira_cloud_auth as jca
 from fetch_jira_jql import iter_all_issues, normalize_issue, SEARCH_FIELDS
 
@@ -24,35 +24,47 @@ RESOLVED_STATUSES = {
     "won't fix", "wont fix", "cannot reproduce",
 }
 
+# Chart palette — sky blue spectrum
+CHART_PRIMARY   = "#0EA5E9"
+CHART_SECONDARY = "#38BDF8"
+CHART_ACCENT    = "#0284C7"
+
 STATUS_COLORS = {
-    "Done":                      "#68D391",
-    "Cancelled":                 "#A0AEC0",
-    "Rejected":                  "#CBD5E0",
-    "To Do":                     "#FC8181",
-    "Investigating":             "#F6AD55",
-    "Development In Progress":   "#F6AD55",
-    "Reopened":                  "#FC8181",
-    "Waiting for customer":      "#63B3ED",
-    "Waiting For CSA":           "#63B3ED",
-    "Waiting For Third Party":   "#B794F4",
-    "Waiting For Engineer":      "#B794F4",
-    "Waiting for Product Team":  "#B794F4",
+    "Done":                      "#10B981",
+    "Cancelled":                 "#94A3B8",
+    "Rejected":                  "#CBD5E1",
+    "To Do":                     "#F43F5E",
+    "Investigating":             "#F59E0B",
+    "Development In Progress":   "#F59E0B",
+    "Reopened":                  "#F43F5E",
+    "Waiting for customer":      "#06B6D4",
+    "Waiting For CSA":           "#06B6D4",
+    "Waiting For Third Party":   "#7DD3FC",
+    "Waiting For Engineer":      "#7DD3FC",
+    "Waiting for Product Team":  "#7DD3FC",
 }
 
 PRIORITY_COLORS = {
-    "Blocker":  "#742A2A",
-    "Critical": "#FC8181",
-    "High":     "#F6AD55",
-    "Medium":   "#63B3ED",
-    "Low":      "#68D391",
-    "Lowest":   "#C6F6D5",
-    "None":     "#CBD5E0",
+    "Blocker":  "#991B1B",
+    "Critical": "#F43F5E",
+    "High":     "#F59E0B",
+    "Medium":   "#0EA5E9",
+    "Low":      "#10B981",
+    "Lowest":   "#6EE7B7",
+    "None":     "#CBD5E1",
 }
 
 PROJECT_COLORS = [
-    "#4F6EF7","#7C8FF5","#63B3ED","#48BB78","#F6AD55",
-    "#FC8181","#B794F4","#68D391","#F687B3","#76E4F7","#FBD38D",
+    "#0EA5E9", "#38BDF8", "#0284C7", "#10B981", "#F59E0B",
+    "#F43F5E", "#7DD3FC", "#34D399", "#0369A1", "#22D3EE", "#FBBF24",
 ]
+
+PLOTLY_LAYOUT = dict(
+    plot_bgcolor="rgba(255,255,255,0)",
+    paper_bgcolor="rgba(255,255,255,0)",
+    font=dict(family="Inter, system-ui, sans-serif", size=12, color="#475569"),
+    margin=dict(l=0, r=0, t=10, b=0),
+)
 
 st.set_page_config(
     page_title="CSE Ticket Intelligence",
@@ -63,94 +75,429 @@ st.set_page_config(
 # ── Global CSS ────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-    .stApp { background-color: #F5F7FA; }
-    .block-container { padding-top: 2rem; padding-bottom: 3rem; }
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 
-    /* ── Duplicate-finder card ── */
-    .result-card {
+    :root {
+        --primary:       #0284C7;
+        --primary-dark:  #0369A1;
+        --accent:        #0EA5E9;
+        --accent-light:  #E0F2FE;
+        --surface:       #FFFFFF;
+        --surface-muted: #FFFFFF;
+        --text-primary:  #0F172A;
+        --text-secondary:#64748B;
+        --text-muted:    #94A3B8;
+        --border:        #E2E8F0;
+        --shadow-sm:     0 1px 3px rgba(15,23,42,0.06);
+        --shadow-md:     0 4px 12px rgba(14,165,233,0.10);
+        --shadow-lg:     0 8px 24px rgba(14,165,233,0.12);
+        --radius:        12px;
+        --radius-lg:     16px;
+    }
+
+    html, body, [class*="css"] {
+        font-family: 'Inter', system-ui, -apple-system, sans-serif !important;
+    }
+
+    /* ── App shell — clean white + light blue ── */
+    .stApp {
+        background: linear-gradient(180deg, #FFFFFF 0%, #F0F9FF 50%, #F8FAFC 100%);
+    }
+    .main .block-container {
+        padding-top: 1.25rem;
+        padding-bottom: 3rem;
+        max-width: 100% !important;
+        padding-left: 2rem !important;
+        padding-right: 2rem !important;
+    }
+
+    /* Hide default Streamlit chrome */
+    #MainMenu, footer, header[data-testid="stHeader"] { visibility: hidden; }
+    header[data-testid="stHeader"] { height: 0 !important; }
+
+    /* ── Tabs — clean pill navigation ── */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 6px;
+        background: #F1F5F9;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 4px;
+        box-shadow: none;
+        width: fit-content;
+    }
+    .stTabs [data-baseweb="tab"] {
+        height: 40px;
+        border-radius: 8px !important;
+        padding: 0 24px !important;
+        font-weight: 600 !important;
+        font-size: 14px !important;
+        color: var(--text-secondary) !important;
+        background: transparent !important;
+        transition: all 0.2s ease;
+    }
+    .stTabs [data-baseweb="tab"]:hover {
+        color: var(--primary) !important;
+        background: #E0F2FE !important;
+    }
+    .stTabs [data-baseweb="tab"][aria-selected="true"] {
+        background: var(--primary) !important;
+        color: #fff !important;
+        box-shadow: 0 2px 8px rgba(2,132,199,0.25);
+    }
+    .stTabs [data-baseweb="tab-highlight"],
+    .stTabs [data-baseweb="tab-border"] { display: none !important; }
+
+    /* ── App header (above tabs) ── */
+    .app-header {
+        margin-bottom: 0.25rem;
+    }
+    .app-title {
+        font-size: 1.75rem;
+        font-weight: 800;
+        letter-spacing: -0.02em;
+        margin: 0 0 4px 0;
+        color: #0F172A;
+    }
+    .app-subtitle {
+        font-size: 13px;
+        color: var(--text-secondary);
+        margin: 0 0 1rem 0;
+        line-height: 1.5;
+    }
+    .mode-hint {
+        font-size: 13px;
+        color: var(--text-secondary);
+        margin: 0 0 1rem 0;
+        line-height: 1.5;
+    }
+    .page-title {
+        font-size: 1.65rem;
+        font-weight: 800;
+        letter-spacing: -0.025em;
+        margin: 0 0 6px 0;
+        color: #0F172A;
+        background: none;
+        -webkit-text-fill-color: #0F172A;
+    }
+    .page-header {
+        margin-bottom: 1.5rem;
+        padding-bottom: 0.5rem;
+    }
+    .page-subtitle {
+        font-size: 14px;
+        color: var(--text-secondary);
+        margin: 0;
+    }
+
+    /* ── Cards ── */
+    .result-card, .query-result-card {
         background: #FFFFFF;
-        border: 1px solid #E2E8F0;
-        border-radius: 12px;
-        padding: 22px 26px;
-        margin-bottom: 14px;
-        box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 24px 28px;
+        margin-bottom: 16px;
+        box-shadow: var(--shadow-sm);
+        transition: box-shadow 0.2s ease, border-color 0.2s ease;
     }
-    .card-meta { display:flex; align-items:center; gap:10px; margin-bottom:10px; flex-wrap:wrap; }
+    .result-card:hover, .query-result-card:hover {
+        box-shadow: var(--shadow-md);
+        border-color: #BAE6FD;
+    }
+    .card-meta { display:flex; align-items:center; gap:10px; margin-bottom:12px; flex-wrap:wrap; }
     .ticket-chip {
-        background:#4F6EF7; color:#fff !important;
-        font-size:12.5px; font-weight:700;
-        padding:4px 12px; border-radius:6px;
-        text-decoration:none !important; letter-spacing:.02em;
+        background: var(--primary);
+        color: #fff !important;
+        font-size: 12px;
+        font-weight: 700;
+        padding: 5px 14px;
+        border-radius: 8px;
+        text-decoration: none !important;
+        letter-spacing: 0.03em;
+        box-shadow: 0 2px 6px rgba(2,132,199,0.25);
+        transition: background 0.15s ease;
     }
-    .ticket-chip:hover { background:#3B55D9; }
+    .ticket-chip:hover {
+        background: var(--primary-dark);
+    }
     .reporter-chip {
-        background:#EEF2FF; color:#4338CA;
-        font-size:12px; font-weight:500;
-        padding:4px 10px; border-radius:6px;
+        background: #E0F2FE;
+        color: #0369A1;
+        font-size: 12px;
+        font-weight: 600;
+        padding: 4px 12px;
+        border-radius: 8px;
+        border: 1px solid #BAE6FD;
     }
-    .card-summary { font-size:16px; font-weight:600; color:#1A202C; line-height:1.45; margin-bottom:14px; }
-    .card-footer { margin-top:14px; padding-top:12px; border-top:1px solid #F0F4F8; }
-    .view-link  { font-size:13px; font-weight:600; color:#4F6EF7 !important; text-decoration:none !important; }
-    .view-link:hover { text-decoration:underline !important; }
-    .results-label { font-size:13px; font-weight:600; color:#718096; text-transform:uppercase; letter-spacing:.06em; margin-bottom:16px; }
+    .card-summary {
+        font-size: 16px;
+        font-weight: 600;
+        color: var(--text-primary);
+        line-height: 1.5;
+        margin-bottom: 14px;
+        letter-spacing: -0.01em;
+    }
+    .card-footer {
+        margin-top: 16px;
+        padding-top: 14px;
+        border-top: 1px solid rgba(148,163,184,0.15);
+    }
+    .view-link {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--primary) !important;
+        text-decoration: none !important;
+        transition: color 0.15s ease;
+    }
+    .view-link:hover { color: var(--primary-dark) !important; }
+    .results-label {
+        font-size: 12px;
+        font-weight: 700;
+        color: var(--text-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        margin-bottom: 16px;
+    }
 
     /* ── Status badge ── */
     .status-badge {
-        font-size:11.5px; font-weight:600;
-        padding:3px 10px; border-radius:20px;
-        display:inline-block; line-height:1.6;
+        font-size: 11px;
+        font-weight: 600;
+        padding: 4px 12px;
+        border-radius: 999px;
+        display: inline-block;
+        line-height: 1.5;
+        border: 1px solid rgba(0,0,0,0.04);
     }
 
-    /* ── Per-ticket insight sections ── */
-    .insight-section { margin-top:14px; padding-top:12px; border-top:1px solid #F0F4F8; }
-    .insight-label   { font-size:11px; font-weight:700; color:#A0AEC0; text-transform:uppercase; letter-spacing:.08em; margin-bottom:6px; }
-    .insight-body    { font-size:14px; color:#4A5568; line-height:1.75; }
-
-    /* ── Centralized intelligence summary card ── */
-    .centralized-card {
-        background: linear-gradient(135deg,#EBF4FF 0%,#F0F4FF 100%);
-        border:1px solid #C3DAFE; border-left:4px solid #4F6EF7;
-        border-radius:12px; padding:18px 22px; margin-bottom:18px;
-        display:flex; align-items:flex-start; gap:14px;
+    /* ── Insight sections ── */
+    .insight-section, .query-insight-section {
+        margin-top: 14px;
+        padding-top: 14px;
+        border-top: 1px solid rgba(148,163,184,0.15);
     }
-    .centralized-icon    { font-size:20px; line-height:1.6; flex-shrink:0; }
-    .centralized-content { flex:1; }
-    .centralized-header  { font-size:11px; font-weight:700; color:#4F6EF7; text-transform:uppercase; letter-spacing:.08em; margin-bottom:6px; }
-    .centralized-body    { font-size:14px; color:#2D3748; line-height:1.75; }
-
-    /* ── Rephrased query hint ── */
-    .rephrase-hint { font-size:12px; color:#718096; margin-bottom:12px; }
-    .rephrase-hint em { color:#4A5568; font-style:italic; }
-
-    /* ── KPI boxes ── */
-    .kpi-row { display:flex; gap:16px; margin-bottom:24px; flex-wrap:wrap; }
-    .kpi-box {
-        flex:1; min-width:160px;
-        background:#fff; border:1px solid #E2E8F0;
-        border-radius:12px; padding:20px 22px;
-        box-shadow:0 1px 3px rgba(0,0,0,0.05);
+    .insight-label, .query-insight-label {
+        font-size: 10.5px;
+        font-weight: 700;
+        color: var(--text-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        margin-bottom: 7px;
     }
-    .kpi-label { font-size:12px; font-weight:600; color:#718096; text-transform:uppercase; letter-spacing:.06em; margin-bottom:6px; }
-    .kpi-value { font-size:32px; font-weight:700; color:#1A202C; line-height:1; }
-    .kpi-sub   { font-size:12px; color:#A0AEC0; margin-top:4px; }
+    .insight-body, .query-insight-body {
+        font-size: 14px;
+        color: var(--text-secondary);
+        line-height: 1.75;
+    }
+
+    /* ── Intelligence / answer cards ── */
+    .centralized-card, .query-answer-card {
+        background: #F0F9FF;
+        border: 1px solid #BAE6FD;
+        border-left: 4px solid var(--primary);
+        border-radius: var(--radius);
+        padding: 22px 26px;
+        margin-bottom: 20px;
+        display: flex;
+        align-items: flex-start;
+        gap: 16px;
+        box-shadow: var(--shadow-sm);
+    }
+    .centralized-icon, .query-answer-icon {
+        font-size: 20px;
+        line-height: 1;
+        flex-shrink: 0;
+        width: 40px;
+        height: 40px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #E0F2FE;
+        border: 1px solid #BAE6FD;
+        border-radius: 10px;
+        box-shadow: none;
+    }
+    .centralized-content, .query-answer-content { flex: 1; }
+    .centralized-header, .query-answer-header {
+        font-size: 11px;
+        font-weight: 700;
+        color: var(--primary);
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        margin-bottom: 8px;
+    }
+    .centralized-body, .query-answer-body {
+        font-size: 14.5px;
+        color: var(--text-primary);
+        line-height: 1.85;
+        white-space: pre-wrap;
+    }
+    .query-sources-label {
+        font-size: 12px;
+        font-weight: 700;
+        color: var(--text-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        margin: 22px 0 14px 0;
+    }
+
+    /* ── Rephrase hint ── */
+    .rephrase-hint {
+        font-size: 12.5px;
+        color: var(--text-secondary);
+        margin-bottom: 14px;
+        padding: 10px 16px;
+        background: #F0F9FF;
+        border-radius: 10px;
+        border: 1px solid #BAE6FD;
+    }
+    .rephrase-hint em { color: var(--text-primary); font-style: italic; font-weight: 500; }
 
     /* ── Section headings ── */
-    .section-title { font-size:16px; font-weight:700; color:#2D3748; margin:24px 0 12px 0; }
+    .section-title {
+        font-size: 15px;
+        font-weight: 700;
+        color: var(--text-primary);
+        margin: 20px 0 14px 0;
+        letter-spacing: -0.01em;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
 
-    /* Input */
+    /* ── Chart containers ── */
+    .chart-panel {
+        background: var(--surface-muted);
+        backdrop-filter: blur(10px);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 8px 12px 4px;
+        box-shadow: var(--shadow-sm);
+        margin-bottom: 8px;
+    }
+
+    /* ── AI disclaimer ── */
+    .ai-disclaimer {
+        font-size: 12px;
+        color: var(--text-muted);
+        text-align: center;
+        margin-top: 12px;
+        line-height: 1.55;
+        padding: 10px 16px;
+        background: #F8FAFC;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+    }
+
+    /* ── Toggle ── */
+    .stToggle label span {
+        font-weight: 600 !important;
+        color: var(--text-primary) !important;
+        font-size: 14px !important;
+    }
+
+    /* ── Text area ── */
     div[data-testid="stTextArea"] textarea {
-        border-radius:10px !important; border:1.5px solid #CBD5E0 !important;
-        font-size:15px !important; background:#fff !important;
-        padding:12px !important; line-height:1.6 !important;
+        border-radius: var(--radius) !important;
+        border: 1.5px solid rgba(148,163,184,0.30) !important;
+        font-size: 15px !important;
+        background: var(--surface) !important;
+        padding: 16px 18px !important;
+        line-height: 1.65 !important;
+        box-shadow: var(--shadow-sm) !important;
+        transition: border-color 0.2s ease, box-shadow 0.2s ease !important;
+        font-family: 'Inter', system-ui, sans-serif !important;
     }
+    div[data-testid="stTextArea"] textarea:focus {
+        border-color: var(--primary) !important;
+        box-shadow: 0 0 0 3px rgba(14,165,233,0.15) !important;
+    }
+
+    /* ── Primary button ── */
+    div[data-testid="stButton"] > button[kind="primary"],
     div[data-testid="stButton"] > button {
-        border-radius:10px !important; font-size:15px !important;
-        font-weight:600 !important; padding:.65rem 1.5rem !important;
-        background:#4F6EF7 !important; color:white !important;
-        border:none !important; transition:opacity .15s ease;
+        border-radius: 10px !important;
+        font-size: 15px !important;
+        font-weight: 600 !important;
+        padding: 0.7rem 1.5rem !important;
+        background: var(--primary) !important;
+        color: white !important;
+        border: none !important;
+        box-shadow: 0 2px 8px rgba(2,132,199,0.25) !important;
+        transition: background 0.18s ease, box-shadow 0.18s ease !important;
     }
-    div[data-testid="stButton"] > button:hover { opacity:.88 !important; }
-    hr { border-color:#E2E8F0; margin:1.5rem 0; }
+    div[data-testid="stButton"] > button:hover {
+        background: var(--primary-dark) !important;
+        box-shadow: 0 4px 12px rgba(2,132,199,0.30) !important;
+    }
+    div[data-testid="stButton"] > button:active {
+        transform: none !important;
+    }
+    div[data-testid="stButton"] > button[kind="secondary"] {
+        background: #FFFFFF !important;
+        color: var(--text-primary) !important;
+        border: 1.5px solid var(--border) !important;
+        box-shadow: none !important;
+    }
+    div[data-testid="stButton"] > button[kind="secondary"]:hover {
+        border-color: #BAE6FD !important;
+        color: var(--primary) !important;
+        box-shadow: var(--shadow-sm) !important;
+    }
+
+    /* ── Metrics — KPI cards ── */
+    div[data-testid="stMetric"] {
+        background: #FFFFFF;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 18px 20px 14px !important;
+        box-shadow: var(--shadow-sm);
+    }
+    div[data-testid="stMetric"]:hover {
+        border-color: #BAE6FD;
+        box-shadow: var(--shadow-md);
+    }
+    div[data-testid="stMetric"] label {
+        font-size: 11px !important;
+        font-weight: 700 !important;
+        color: var(--text-muted) !important;
+        text-transform: uppercase !important;
+        letter-spacing: 0.07em !important;
+    }
+    div[data-testid="stMetric"] [data-testid="stMetricValue"] {
+        font-size: 1.85rem !important;
+        font-weight: 800 !important;
+        letter-spacing: -0.03em !important;
+        color: #0F172A !important;
+        background: none;
+        -webkit-text-fill-color: #0F172A;
+    }
+    div[data-testid="stMetric"] [data-testid="stMetricDelta"] {
+        font-size: 11.5px !important;
+        color: var(--text-secondary) !important;
+    }
+
+    /* ── Alerts ── */
+    div[data-testid="stAlert"] {
+        border-radius: var(--radius) !important;
+        border: 1px solid var(--border) !important;
+    }
+
+    /* ── Spinner ── */
+    .stSpinner > div { border-top-color: var(--primary) !important; }
+
+    /* ── Dividers ── */
+    hr {
+        border: none;
+        height: 1px;
+        background: #E2E8F0;
+        margin: 1.5rem 0;
+    }
+
+    /* ── Caption footer ── */
+    .stCaption, small {
+        color: var(--text-muted) !important;
+        font-size: 12px !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -159,12 +506,12 @@ def _status_badge_colors(status: str):
     """Return (bg_hex, text_hex) for a status pill based on the status name."""
     s = (status or "").lower()
     if any(x in s for x in ("done", "closed", "resolved", "cancelled", "canceled", "rejected")):
-        return "#C6F6D5", "#276749"   # green
+        return "#D1FAE5", "#065F46"
     if any(x in s for x in ("investigating", "in progress", "development")):
-        return "#FEEBC8", "#7B341E"   # orange
+        return "#FEF3C7", "#92400E"
     if any(x in s for x in ("waiting", "to do", "reopened")):
-        return "#FED7D7", "#742A2A"   # red/pink
-    return "#EDF2F7", "#4A5568"       # neutral gray
+        return "#FFE4E6", "#9F1239"
+    return "#F1F5F9", "#475569"
 
 
 PROJECT_FULL_NAMES = {
@@ -227,51 +574,77 @@ def load_jira_data() -> pd.DataFrame:
     return df
 
 
+# ── APP HEADER ───────────────────────────────────────────────────────────────
+st.markdown("""
+<div class="app-header">
+    <h1 class="app-title">CSE Ticket Intelligence</h1>
+    <p class="app-subtitle">Describe a new defect to find similar existing tickets and probable root causes.</p>
+</div>
+""", unsafe_allow_html=True)
+
 # ── TABS ─────────────────────────────────────────────────────────────────────
-tab1, tab2 = st.tabs(["🔍 CSE Tickets", "📊 Analytics"])
+tab1, tab2 = st.tabs(["CSE Tickets", "Analytics"])
 
 
 # ════════════════════════════════════════════════════════════════════════════════
 # TAB 1 — DUPLICATE FINDER
 # ════════════════════════════════════════════════════════════════════════════════
 with tab1:
-    _, col, _ = st.columns([1, 5, 1])
-    with col:
-        st.markdown("""
-        <div style="text-align:center; margin-bottom:1.8rem;">
-            <p style="font-size:26px;font-weight:700;color:#1A202C;margin:0 0 6px 0;">🎯 CSE Ticket Intelligence</p>
-            <p style="font-size:15px;color:#718096;margin:0;">Describe a new defect to find similar existing tickets and probable root causes.</p>
-        </div>""", unsafe_allow_html=True)
+    query_mode = st.toggle(
+        "Query?",
+        value=False,
+        help="Turn on to ask a question and get an AI answer from historical CSE queries.",
+    )
 
-        st.markdown("---")
-
-        query = st.text_area(
-            "Defect Description",
-            height=120,
-            placeholder="e.g. User sees a blank white screen right after logging in. The CRM dashboard never loads...",
-            label_visibility="collapsed",
+    if query_mode:
+        placeholder = "e.g. Why are some calls charged around $5 when most 10-minute calls cost about $0.40?"
+        input_label = "Your Question"
+        st.markdown(
+            '<p class="mode-hint">Ask a question — we\'ll search past CSE queries and answer using the most relevant tickets.</p>',
+            unsafe_allow_html=True,
         )
-        search_clicked = st.button("🔍  Search Knowledge Base", use_container_width=True)
+    else:
+        placeholder = "e.g. User sees a blank white screen right after logging in. The CRM dashboard never loads..."
+        input_label = "Defect Description"
 
-        if search_clicked:
-            if not query.strip():
-                st.warning("Please enter a defect description before searching.")
-            else:
-                with st.spinner("Searching knowledge base…"):
-                    try:
+    query = st.text_area(
+        input_label,
+        height=120,
+        placeholder=placeholder,
+        label_visibility="collapsed",
+    )
+    search_clicked = st.button("Search Knowledge Base", use_container_width=True, type="primary")
+    st.markdown(
+        '<p class="ai-disclaimer">⚠️ Results are generated using AI. '
+        'Use as guidance only — always verify before acting on or sharing with customers.</p>',
+        unsafe_allow_html=True,
+    )
+
+    if search_clicked:
+        if not query.strip():
+            st.warning("Please enter a question or defect description before searching.")
+        else:
+            with st.spinner("Searching knowledge base…"):
+                try:
+                    if query_mode:
+                        output  = find_query_answer(query.strip())
+                        results = output.get("sources", [])
+                    else:
                         output  = find_duplicates(query.strip())
                         results = output.get("results", [])
-                    except Exception as exc:
-                        st.error(f"Something went wrong: {exc}")
-                        output  = {}
-                        results = []
+                except Exception as exc:
+                    st.error(f"Something went wrong: {exc}")
+                    output  = {}
+                    results = []
 
-                if not results:
-                    st.info("No similar tickets found in the knowledge base.")
+            if query_mode:
+                answer  = output.get("answer", "")
+                results = output.get("sources", [])
+                if not answer and not results:
+                    st.info("No relevant query records found in the knowledge base.")
                 else:
                     st.markdown("---")
 
-                    # Rephrased query hint
                     search_q = output.get("search_query", "")
                     if search_q and search_q.strip().lower() != query.strip().lower():
                         st.markdown(
@@ -279,54 +652,121 @@ with tab1:
                             unsafe_allow_html=True,
                         )
 
-                    # Centralized intelligence summary card
-                    central = output.get("centralized_summary", "")
-                    if central:
+                    if answer:
                         st.markdown(f"""
-<div class="centralized-card">
-    <div class="centralized-icon">💡</div>
-    <div class="centralized-content">
-        <div class="centralized-header">Intelligence Summary</div>
-        <div class="centralized-body">{_html.escape(central)}</div>
+<div class="query-answer-card">
+    <div class="query-answer-icon">💡</div>
+    <div class="query-answer-content">
+    <div class="query-answer-header">Answer</div>
+    <div class="query-answer-body">{_html.escape(answer)}</div>
+    </div>
+</div>""", unsafe_allow_html=True)
+                    elif results:
+                        st.info("Found related tickets but could not generate an answer. See sources below.")
+
+                    if results:
+                        st.markdown(
+                            f'<p class="query-sources-label">Top {len(results)} relevant tickets</p>',
+                            unsafe_allow_html=True,
+                        )
+                        for r in results:
+                            key            = r["key"]
+                            reporter       = _html.escape(r.get("reporter") or "")
+                            summary        = _html.escape(r.get("summary") or "—")
+                            status         = r.get("status", "")
+                            ticket_summary = _html.escape(r.get("ticket_summary", ""))
+                            relevance      = _html.escape(r.get("relevance", ""))
+                            combined       = (ticket_summary + (" " if ticket_summary and relevance else "") + relevance).strip()
+                            ticket_url     = f"{JIRA_BASE}{key}"
+                            bg, fg = _status_badge_colors(status)
+                            status_html = (
+                                f'<span class="status-badge" style="background:{bg};color:{fg};">'
+                                f'● {_html.escape(status)}</span>'
+                            ) if status else ""
+                            reporter_html = (
+                                f'<span class="reporter-chip">👤 {reporter}</span>'
+                            ) if reporter else ""
+                            insight_html = (
+                                f'<div class="query-insight-section">'
+                                f'<div class="query-insight-label">AI Summary &amp; Relevance</div>'
+                                f'<div class="query-insight-body">{combined}</div>'
+                                f'</div>'
+                            ) if combined else ""
+                            st.markdown(f"""
+<div class="query-result-card">
+    <div class="card-meta">
+    <a class="ticket-chip" href="{ticket_url}" target="_blank">{key}</a>
+    {status_html}
+    {reporter_html}
+    </div>
+    <div class="card-summary">{summary}</div>
+    {insight_html}
+    <div class="card-footer">
+    <a class="view-link" href="{ticket_url}" target="_blank">View ticket in Jira →</a>
     </div>
 </div>""", unsafe_allow_html=True)
 
-                    st.markdown(f'<p class="results-label">Top {len(results)} matches found</p>', unsafe_allow_html=True)
+            elif not results:
+                st.info("No similar tickets found in the knowledge base.")
+            else:
+                st.markdown("---")
 
-                    for i, r in enumerate(results, 1):
-                        key            = r["key"]
-                        reporter       = _html.escape(r.get("reporter") or "Unknown")
-                        summary        = _html.escape(r.get("summary", "—"))
-                        status         = r.get("status", "")
-                        ticket_summary = _html.escape(r.get("ticket_summary", ""))
-                        insight        = _html.escape(r.get("insight", ""))
-                        ticket_url     = f"{JIRA_BASE}{key}"
+                # Rephrased query hint
+                search_q = output.get("search_query", "")
+                if search_q and search_q.strip().lower() != query.strip().lower():
+                    st.markdown(
+                        f'<p class="rephrase-hint">🔍 Searched as: <em>{_html.escape(search_q)}</em></p>',
+                        unsafe_allow_html=True,
+                    )
 
-                        # Status badge
-                        bg, fg = _status_badge_colors(status)
-                        status_html = (
-                            f'<span class="status-badge" style="background:{bg};color:{fg};">'
-                            f'● {_html.escape(status)}</span>'
-                        ) if status else ""
+                # Centralized intelligence summary card
+                central = output.get("centralized_summary", "")
+                if central:
+                    st.markdown(f"""
+<div class="centralized-card">
+    <div class="centralized-icon">💡</div>
+    <div class="centralized-content">
+    <div class="centralized-header">Intelligence Summary</div>
+    <div class="centralized-body">{_html.escape(central)}</div>
+    </div>
+</div>""", unsafe_allow_html=True)
 
-                        st.markdown(f"""
+                st.markdown(f'<p class="results-label">Top {len(results)} matches found</p>', unsafe_allow_html=True)
+
+                for i, r in enumerate(results, 1):
+                    key            = r["key"]
+                    reporter       = _html.escape(r.get("reporter") or "Unknown")
+                    summary        = _html.escape(r.get("summary", "—"))
+                    status         = r.get("status", "")
+                    ticket_summary = _html.escape(r.get("ticket_summary", ""))
+                    insight        = _html.escape(r.get("insight", ""))
+                    ticket_url     = f"{JIRA_BASE}{key}"
+
+                    # Status badge
+                    bg, fg = _status_badge_colors(status)
+                    status_html = (
+                        f'<span class="status-badge" style="background:{bg};color:{fg};">'
+                        f'● {_html.escape(status)}</span>'
+                    ) if status else ""
+
+                    st.markdown(f"""
 <div class="result-card">
     <div class="card-meta">
-        <a class="ticket-chip" href="{ticket_url}" target="_blank">{key}</a>
-        {status_html}
-        <span class="reporter-chip">👤 {reporter}</span>
+    <a class="ticket-chip" href="{ticket_url}" target="_blank">{key}</a>
+    {status_html}
+    <span class="reporter-chip">👤 {reporter}</span>
     </div>
     <div class="card-summary">{summary}</div>
     <div class="insight-section">
-        <div class="insight-label">AI Ticket Summary</div>
-        <div class="insight-body">{ticket_summary}</div>
+    <div class="insight-label">AI Ticket Summary</div>
+    <div class="insight-body">{ticket_summary}</div>
     </div>
     <div class="insight-section">
-        <div class="insight-label">Similarity Insight &amp; RCA</div>
-        <div class="insight-body">{insight}</div>
+    <div class="insight-label">Similarity Insight &amp; RCA</div>
+    <div class="insight-body">{insight}</div>
     </div>
     <div class="card-footer">
-        <a class="view-link" href="{ticket_url}" target="_blank">View ticket in Jira →</a>
+    <a class="view-link" href="{ticket_url}" target="_blank">View ticket in Jira →</a>
     </div>
 </div>""", unsafe_allow_html=True)
 
@@ -336,13 +776,15 @@ with tab1:
 # ════════════════════════════════════════════════════════════════════════════════
 with tab2:
     st.markdown("""
-    <p style="font-size:22px;font-weight:700;color:#1A202C;margin:0 0 4px 0;">📊 Ticket Analytics</p>
-    <p style="font-size:14px;color:#718096;margin:0 0 20px 0;">Customer-reported bugs — last 12 months · auto-refreshes every 30 min</p>
+    <div class="page-header">
+        <p class="page-title">Ticket Analytics</p>
+        <p class="page-subtitle">Customer-reported bugs — last 12 months · auto-refreshes every 30 min</p>
+    </div>
     """, unsafe_allow_html=True)
 
     col_ref, _ = st.columns([1, 6])
     with col_ref:
-        if st.button("🔄 Refresh Data"):
+        if st.button("Refresh Data", type="secondary"):
             st.cache_data.clear()
             st.rerun()
 
@@ -396,19 +838,21 @@ with tab2:
 
         fig_trend = px.bar(
             monthly, x="label", y="count",
-            color_discrete_sequence=["#4F6EF7"],
+            color_discrete_sequence=[CHART_PRIMARY],
             labels={"label": "", "count": "Tickets"},
         )
         fig_trend.update_layout(
-            plot_bgcolor="#fff", paper_bgcolor="#fff",
-            margin=dict(l=0, r=0, t=10, b=0),
-            xaxis=dict(tickangle=-35, showgrid=False),
-            yaxis=dict(showgrid=True, gridcolor="#F0F4F8"),
-            font=dict(family="sans-serif", size=12),
+            **PLOTLY_LAYOUT,
+            xaxis=dict(tickangle=-35, showgrid=False, linecolor="rgba(148,163,184,0.3)"),
+            yaxis=dict(showgrid=True, gridcolor="rgba(148,163,184,0.15)", zeroline=False),
             showlegend=False,
-            bargap=0.25,
+            bargap=0.28,
         )
-        fig_trend.update_traces(marker_line_width=0)
+        fig_trend.update_traces(
+            marker_line_width=0,
+            marker_color=CHART_PRIMARY,
+            hovertemplate="<b>%{x}</b><br>%{y} tickets<extra></extra>",
+        )
         st.plotly_chart(fig_trend, use_container_width=True)
 
     with col_right:
@@ -427,10 +871,8 @@ with tab2:
             hovertemplate="<b>%{label}</b><br>%{value} tickets (%{percent})<extra></extra>",
         ))
         fig_status.update_layout(
-            plot_bgcolor="#fff", paper_bgcolor="#fff",
-            margin=dict(l=0, r=0, t=10, b=0),
-            font=dict(family="sans-serif", size=12),
-            legend=dict(orientation="v", x=1.0, y=0.5),
+            **PLOTLY_LAYOUT,
+            legend=dict(orientation="v", x=1.0, y=0.5, font=dict(size=11)),
             showlegend=True,
         )
         st.plotly_chart(fig_status, use_container_width=True)
@@ -452,11 +894,9 @@ with tab2:
             text="count",
         )
         fig_pri.update_layout(
-            plot_bgcolor="#fff", paper_bgcolor="#fff",
-            margin=dict(l=0, r=0, t=10, b=0),
-            xaxis=dict(showgrid=True, gridcolor="#F0F4F8"),
+            **PLOTLY_LAYOUT,
+            xaxis=dict(showgrid=True, gridcolor="rgba(148,163,184,0.15)", zeroline=False),
             yaxis=dict(showgrid=False),
-            font=dict(family="sans-serif", size=12),
             showlegend=False,
         )
         fig_pri.update_traces(textposition="outside", marker_line_width=0)
@@ -475,16 +915,14 @@ with tab2:
         fig_rep = px.bar(
             rep_counts, x="count", y="reporter",
             orientation="h",
-            color_discrete_sequence=["#7C8FF5"],
+            color_discrete_sequence=[CHART_SECONDARY],
             labels={"count": "Tickets", "reporter": ""},
             text="count",
         )
         fig_rep.update_layout(
-            plot_bgcolor="#fff", paper_bgcolor="#fff",
-            margin=dict(l=0, r=0, t=10, b=0),
-            xaxis=dict(showgrid=True, gridcolor="#F0F4F8"),
+            **PLOTLY_LAYOUT,
+            xaxis=dict(showgrid=True, gridcolor="rgba(148,163,184,0.15)", zeroline=False),
             yaxis=dict(showgrid=False),
-            font=dict(family="sans-serif", size=12),
             showlegend=False,
         )
         fig_rep.update_traces(textposition="outside", marker_line_width=0)
@@ -518,11 +956,9 @@ with tab2:
             text="count",
         )
         fig_proj.update_layout(
-            plot_bgcolor="#fff", paper_bgcolor="#fff",
-            margin=dict(l=0, r=0, t=10, b=0),
-            xaxis=dict(showgrid=False),
-            yaxis=dict(showgrid=True, gridcolor="#F0F4F8"),
-            font=dict(family="sans-serif", size=12),
+            **PLOTLY_LAYOUT,
+            xaxis=dict(showgrid=False, tickangle=-25),
+            yaxis=dict(showgrid=True, gridcolor="rgba(148,163,184,0.15)", zeroline=False),
             showlegend=False,
         )
         fig_proj.update_traces(textposition="outside", marker_line_width=0)
@@ -536,17 +972,15 @@ with tab2:
             x="resolution_rate", y="label",
             orientation="h",
             color="resolution_rate",
-            color_continuous_scale=["#FC8181", "#F6AD55", "#68D391"],
+            color_continuous_scale=["#F43F5E", "#F59E0B", "#10B981"],
             range_color=[0, 100],
             labels={"resolution_rate": "Resolved %", "label": ""},
             text=proj_sorted["resolution_rate"].apply(lambda x: f"{x}%"),
         )
         fig_rate.update_layout(
-            plot_bgcolor="#fff", paper_bgcolor="#fff",
-            margin=dict(l=0, r=0, t=10, b=0),
-            xaxis=dict(showgrid=True, gridcolor="#F0F4F8", range=[0, 110]),
+            **PLOTLY_LAYOUT,
+            xaxis=dict(showgrid=True, gridcolor="rgba(148,163,184,0.15)", range=[0, 110], zeroline=False),
             yaxis=dict(showgrid=False),
-            font=dict(family="sans-serif", size=12),
             showlegend=False,
             coloraxis_showscale=False,
         )
@@ -586,11 +1020,9 @@ with tab2:
             hovertemplate="<b>%{x}</b><br>Avg: %{y}d<br>Median: %{customdata[0]}d<br>Tickets: %{customdata[1]}<extra></extra>",
         )
         fig_res.update_layout(
-            plot_bgcolor="#fff", paper_bgcolor="#fff",
-            margin=dict(l=0, r=0, t=10, b=0),
+            **PLOTLY_LAYOUT,
             xaxis=dict(showgrid=False),
-            yaxis=dict(showgrid=True, gridcolor="#F0F4F8", title="Days"),
-            font=dict(family="sans-serif", size=12),
+            yaxis=dict(showgrid=True, gridcolor="rgba(148,163,184,0.15)", title="Days", zeroline=False),
             showlegend=False,
         )
         st.plotly_chart(fig_res, use_container_width=True)
@@ -599,8 +1031,8 @@ with tab2:
         st.markdown('<p class="section-title">📂 Tickets by Status Category</p>', unsafe_allow_html=True)
         cat_counts = df["status_category"].value_counts().reset_index()
         cat_counts.columns = ["category", "count"]
-        CAT_COLORS = {"Done": "#68D391", "In Progress": "#F6AD55", "To Do": "#FC8181"}
-        cat_colors = [CAT_COLORS.get(c, "#A0AEC0") for c in cat_counts["category"]]
+        CAT_COLORS = {"Done": "#10B981", "In Progress": "#F59E0B", "To Do": "#F43F5E"}
+        cat_colors = [CAT_COLORS.get(c, "#94A3B8") for c in cat_counts["category"]]
 
         fig_cat = go.Figure(go.Pie(
             labels=cat_counts["category"],
@@ -610,12 +1042,7 @@ with tab2:
             textinfo="label+percent",
             hovertemplate="<b>%{label}</b><br>%{value} tickets (%{percent})<extra></extra>",
         ))
-        fig_cat.update_layout(
-            plot_bgcolor="#fff", paper_bgcolor="#fff",
-            margin=dict(l=0, r=0, t=10, b=0),
-            font=dict(family="sans-serif", size=13),
-            showlegend=False,
-        )
+        fig_cat.update_layout(**PLOTLY_LAYOUT, showlegend=False)
         st.plotly_chart(fig_cat, use_container_width=True)
 
     # ── Footer ────────────────────────────────────────────────────────────────
